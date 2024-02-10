@@ -1,0 +1,209 @@
+Table of contents:
+1. Overview of Theory    ___________________________________________ (line   8)
+2. Compilation & Testing ___________________________________________ (line  52)
+3. Results & Analysis    ___________________________________________ (line  63)
+4. Raw Test Results      ___________________________________________ (line 116)
+_______________________________________________________________________________
+
+1. Overview of Theory
+
+ConcurrentBSTMap, as its name suggets, is a lock-based (thread-safe)
+implementation of map based on the binary search tree structure. It is
+analogous to std::map<int,int> in its functionality, although more limited --
+only providing put, get, and remove operations.
+
+ConcurrentBSTMap resembles a typical BST, with three major differences:
+
+  (1) Each node has a mutex: allows for granular locks.
+
+  (2) Each node has a version: very important in making a fine-grain concurrent
+      binary tree. In the original paper published by Bronson et al. (2010),
+      the version of a node can describe various states such as unlinked,
+      growing, and shrinking. Adopting this idea, my implementation uses
+      version to indicate unlinked nodes.
+
+  (3) It is a partially external tree: deleting a node with 2 children is not
+      trivial, as it requires you to locate its successor, which could mean
+      O(log n) in the worst case. Solution: don't delete it, just set its value
+      to -inf so we know that it's "deleted".
+
+All of these allow us to implement the hand-over-hand technique, which makes
+the concurrency so fine-grained that it almost looks lock-free. All auxiliary
+functions -- attemptPut, attemptRemove, attemptGet -- follow the same basic
+pattern:
+
+attempt*(search key, inbound link, dir):
+  if inbound link is valid:
+    get outbound link
+    if outbound link's key == search key:
+      perform lock-based action         <-------- this is the only line that requires lock(s)
+    else
+      if outbound link is valid:        <---+
+        if inbound link is valid:       <---+---- notice the hand-over-hand revalidation pattern here
+          attempt*(search key, outbound link, nextDir)
+        else:
+          make caller retry             <---+
+      else:                                 |
+        retry in this function          <---+---- whoever provided the invalid link is told to retry
+  else:                                     |
+    make caller retry                   <---+
+_______________________________________________________________________________
+
+2. Compilation & Testing
+
+- You can use the makefile to compile the code and run the tests.
+
+- The makefile provides 12 standard tests (numbered 0-11) and 2 memory leak
+  tests (numbered mem5 and mem6).
+
+- Running "./gnu.exe" (without any arguments) will print detailed descriptions
+  of the 12 standard tests.
+_______________________________________________________________________________
+
+3. Results & Analysis
+
+All in all, ConcurrentBSTMap, utilizing all 12 logical cores on my CPU
+(i5-10400F @ 2.90GHz), performs 2.5-4 times better than std::map under all
+circumstances.
+
+What is interesting though, is that it defies the expectation that the optimal
+number of threads would be 6 (= # of physical cores); 12 threads consistently
+performs better than 6 by a moderate margin (see test11 results below). This
+behavior does not seem to be affected by compiler optimizations either (I've
+tested -O0 against -O3). For context, each physical processor on this CPU has a
+64-KB L1 cache.
+
+I have done some online searches and came across a couple hypotheses.
+
+  (1) Hyperthreading works best with integer operations, which does apply to my
+      case. However, changing the value type to float does not seem to have
+      decreased hyperthreading performance significantly (or at all).
+
+  (2) Intel processors' shared mode vs adaptive mode. I do not have enough
+      knowledge about the specifics of CR3 control registers and paging modes,
+      but I would guess that two threads running the same function with the
+      same type of data would be able to take advantage of adaptive mode,
+      somehow eliminating contention for the L1 cache according to the manual:
+
+    (a) In shared mode, the L1 data cache is competitively shared between
+        logical processors. This is true even if the logical processors use
+        identical CR3 registers and paging modes. In shared mode, linear
+        addresses in the L1 data cache can be aliased, meaning that one linear
+        address in the cache can point to different physical locations. The
+        mechanism for resolving aliasing can lead to thrashing. For this reason,
+        IA32_MISC_ENABLE[bit 24] = 0 is the preferred configuration for
+        processors based on the Intel NetBurst microarchitecture that support
+        Intel Hyper-Threading Technology.
+
+    (b) Adaptive mode facilitates L1 data cache sharing between logical
+        processors. When running in adaptive mode, the L1 data cache is shared
+        across logical processors in the same core if:
+        * CR3 control registers for logical processors sharing the cache are
+          identical.
+        * The same paging mode is used by logical processors sharing the cache.
+        In this situation, the entire L1 data cache is available to each
+        logical processor (instead of being competitively shared). If CR3
+        values are different for the logical processors sharing an L1 data
+        cache or the logical processors use different paging modes, processors
+        compete for cache resources. This reduces the effective size of the
+        cache for each logical processor. Aliasing of the cache is not allowed
+        (which prevents data thrashing).
+
+But the honest answer is that I don't know. I need to study some hardware stuff
+to figure this out.
+_______________________________________________________________________________
+
+4. Raw Test Results
+
+-------------- TEST11 -------------
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+   6-threaded ConcurrentBSTMap = 22069086 microseconds
+      Single-threaded std::map = 79895275 microseconds
+
+Performance improvement = 3.62
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  12-threaded ConcurrentBSTMap = 20231932 microseconds
+      Single-threaded std::map = 78773235 microseconds
+
+Performance improvement = 3.894
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  24-threaded ConcurrentBSTMap = 20234637 microseconds
+      Single-threaded std::map = 79579670 microseconds
+
+Performance improvement = 3.933
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  48-threaded ConcurrentBSTMap = 19241888 microseconds
+      Single-threaded std::map = 77037175 microseconds
+
+Performance improvement = 4.004
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  96-threaded ConcurrentBSTMap = 20551466 microseconds
+      Single-threaded std::map = 78092176 microseconds
+
+Performance improvement = 3.8
+
+-------------- TEST11 -------------
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+   6-threaded ConcurrentBSTMap = 23526771 microseconds
+      Single-threaded std::map = 83464201 microseconds
+
+Performance improvement = 3.548
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  12-threaded ConcurrentBSTMap = 19294912 microseconds
+      Single-threaded std::map = 81764071 microseconds
+
+Performance improvement = 4.238
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  24-threaded ConcurrentBSTMap = 20807244 microseconds
+      Single-threaded std::map = 81695939 microseconds
+
+Performance improvement = 3.926
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  48-threaded ConcurrentBSTMap = 21785485 microseconds
+      Single-threaded std::map = 86808808 microseconds
+
+Performance improvement = 3.985
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  96-threaded ConcurrentBSTMap = 21392214 microseconds
+      Single-threaded std::map = 84035227 microseconds
+
+Performance improvement = 3.928
+
+-------------- TEST11 -------------
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+   6-threaded ConcurrentBSTMap = 24186107 microseconds
+      Single-threaded std::map = 81507827 microseconds
+
+Performance improvement = 3.37
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  12-threaded ConcurrentBSTMap = 21856556 microseconds
+      Single-threaded std::map = 81335693 microseconds
+
+Performance improvement = 3.721
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  24-threaded ConcurrentBSTMap = 22054926 microseconds
+      Single-threaded std::map = 82012237 microseconds
+
+Performance improvement = 3.719
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  48-threaded ConcurrentBSTMap = 20539324 microseconds
+      Single-threaded std::map = 83424670 microseconds
+
+Performance improvement = 4.062
+
+60000000 operations with (put, remove, get) frequencies of (0.333, 0.333, 0.334)
+  96-threaded ConcurrentBSTMap = 20853139 microseconds
+      Single-threaded std::map = 81875239 microseconds
+
+Performance improvement = 3.926
