@@ -4,7 +4,7 @@
 > 1. [Overview of Theory](#Overview-of-Theory)
 > 2. [Compilation and Testing](#Compilation-and-Testing)
 > 3. [Results and Analysis](#Results-and-Analysis)
-> 4. Raw Test Results
+> 4. [Raw Test Results](#Raw-Test-Results)
 ___
 
 ## Overview of Theory
@@ -51,7 +51,7 @@ pattern:
             make caller retry                   <---+
 ___
 
-## Compilation & Testing
+## Compilation and Testing
 
 - You can use the makefile to compile the code and run the tests.
 
@@ -62,7 +62,7 @@ tests (numbered `mem5` and `mem6`).
 of the 12 standard tests.
 ___
 
-## Results & Analysis
+## Results and Analysis
 
 All in all, ConcurrentBSTMap, utilizing all 12 logical processors on my CPU
 (i5-10400F @ 2.90GHz), performs 2.5-4 times better than `std::map` under all
